@@ -1,0 +1,108 @@
+Texture2D _sourceTexture2D;
+RWTexture2D<float4> _renderTexture;
+float2 _step;                                                                                                                                                           // _sourceTexture.resolution / _renderTexture.resolution
+float2 _groupSize;
+
+#pragma kernel Kernel_Default
+[numthreads(1, 1, 1)]
+void Kernel_Default(uint3 id : SV_DispatchThreadID)
+{
+    uint2 _pos = round(id.xy * _step);
+    _renderTexture[id.xy] = _sourceTexture2D[_pos.xy];
+}
+
+#pragma kernel Kernel_Bilinear
+[numthreads(1,1,1)]
+void Kernel_Bilinear(uint3 id : SV_DispatchThreadID)
+{   
+    float2 _pos = id.xy * _step;                                                                                                                                        // Target Texture Pixel Position in Source Texture Space
+    int2 _pixel = floor(_pos);
+    float2 _t = _pos - floor(_pos);
+    float4 _leftColor = lerp(
+        _sourceTexture2D[_pixel],
+        _sourceTexture2D[_pixel + uint2(0, 1)],
+        _t.y
+    );
+    float4 _rightColor = lerp(
+        _sourceTexture2D[_pixel + uint2(1, 0)],
+        _sourceTexture2D[_pixel + uint2(1, 1)],
+        _t.y
+    );
+    _renderTexture[id.xy] = lerp(
+        _leftColor,
+        _rightColor,
+        _t.x
+    );
+}
+
+#pragma kernel Kernel_Blend
+[numthreads(1,1,1)]
+void Kernel_Blend(uint3 id : SV_DispatchThreadID)
+{
+    uint2 _pos = floor(id.xy * _step) - uint2(_groupSize.x * 0.5, _groupSize.y * 0.5);
+    float4 _pixel = _sourceTexture2D[_pos.xy];                                                                                                                          // Initial Pixel   
+    [unroll(64)]
+    for (int _x = 0; _x < _groupSize.x; _x++)
+    {
+        for (int _y = 0; _y < _groupSize.y; _y++)
+        {
+            _pixel += _sourceTexture2D[_pos.xy + uint2(_x, _y)];
+        }
+    }
+    _pixel -= _sourceTexture2D[_pos.xy] * min(1, (_groupSize.x * _groupSize.y));                                                                                        // Remove Initial Pixel from Average if Group is Available
+    _renderTexture[id.xy] = _pixel / max(1, _groupSize.x * _groupSize.y);                                                                                               // Calculate Average of Pixel Group  
+}
+
+#pragma kernel Kernel_Bicubic
+struct float44x4
+{
+    float4 _0[4];
+    float4 _1[4];
+    float4 _2[4];
+    float4 _3[4];
+};
+float4 cubic(float4 p0, float4 p1, float4 p2, float4 p3, float f)
+{
+    return float4(
+        p1.r + 0.5 * f * (p2.r - p0.r + f * (2.0 * p0.r - 5.0 * p1.r + 4.0 * p2.r - p3.r + f * (3.0 * (p1.r - p2.r) + p3.r - p0.r))),
+        p1.g + 0.5 * f * (p2.g - p0.g + f * (2.0 * p0.g - 5.0 * p1.g + 4.0 * p2.g - p3.g + f * (3.0 * (p1.g - p2.g) + p3.g - p0.g))),
+        p1.b + 0.5 * f * (p2.b - p0.b + f * (2.0 * p0.b - 5.0 * p1.b + 4.0 * p2.b - p3.b + f * (3.0 * (p1.b - p2.b) + p3.b - p0.b))),
+        p1.a + 0.5 * f * (p2.a - p0.a + f * (2.0 * p0.a - 5.0 * p1.a + 4.0 * p2.a - p3.a + f * (3.0 * (p1.a - p2.a) + p3.a - p0.a)))
+    );
+}
+[numthreads(1,1,1)]
+void Kernel_Bicubic(uint3 id : SV_DispatchThreadID)
+{
+    float44x4 _p;                                                                                                                                                       // 4x4 Pixelgrid
+    float2 _pos = id.xy * _step;
+    uint2 _pixel = floor(_pos);
+    float2 _f = _pos - _pixel;
+    
+    _p._0[0] = _sourceTexture2D[_pixel.xy + uint2(-1, 2)];                                                                                                              // 1st Row, 1st Pixel (Top Row)
+    _p._0[1] = _sourceTexture2D[_pixel.xy + uint2(0, 2)];                                                                                                               // 1st Row, 2nd Pixel (Top Row)
+    _p._0[2] = _sourceTexture2D[_pixel.xy + uint2(1, 2)];                                                                                                               // 1st Row, 3rd Pixel (Top Row)
+    _p._0[3] = _sourceTexture2D[_pixel.xy + uint2(2, 2)];                                                                                                               // 1st Row, 4th Pixel (Top Row)
+    
+    _p._1[0] = _sourceTexture2D[_pixel.xy + uint2(-1, 1)];                                                                                                              // 2nd Row, 1st Pixel
+    _p._1[1] = _sourceTexture2D[_pixel.xy + uint2(0, 1)];                                                                                                               // 2nd Row, 2nd Pixel
+    _p._1[2] = _sourceTexture2D[_pixel.xy + uint2(1, 1)];                                                                                                               // 2nd Row, 3rd Pixel
+    _p._1[3] = _sourceTexture2D[_pixel.xy + uint2(2, 1)];                                                                                                               // 2nd Row, 4th Pixel
+    
+    _p._2[0] = _sourceTexture2D[_pixel.xy + uint2(-1, 0)];                                                                                                              // 3rd Row, 1st Pixel
+    _p._2[1] = _sourceTexture2D[_pixel.xy + uint2(0, 0)];                                                                                                               // 3rd Row, 2nd Pixel
+    _p._2[2] = _sourceTexture2D[_pixel.xy + uint2(1, 0)];                                                                                                               // 3rd Row, 3rd Pixel
+    _p._2[3] = _sourceTexture2D[_pixel.xy + uint2(2, 0)];                                                                                                               // 3rd Row, 4th Pixel
+    
+    _p._3[0] = _sourceTexture2D[_pixel.xy + uint2(-1, -1)];                                                                                                             // 4th Row, 1st Pixel (Bottom Row)
+    _p._3[1] = _sourceTexture2D[_pixel.xy + uint2(0, -1)];                                                                                                              // 4th Row, 2nd Pixel (Bottom Row)
+    _p._3[2] = _sourceTexture2D[_pixel.xy + uint2(1, -1)];                                                                                                              // 4th Row, 3rd Pixel (Bottom Row)
+    _p._3[3] = _sourceTexture2D[_pixel.xy + uint2(2, -1)];                                                                                                              // 4th Row, 4th Pixel (Bottom Row)
+    
+    _renderTexture[id.xy] = cubic(
+        cubic(_p._0[0], _p._0[1], _p._0[2], _p._0[3], _f.x),                                                                                                            // Interpolate 1st Row
+        cubic(_p._1[0], _p._1[1], _p._1[2], _p._1[3], _f.x),                                                                                                            // Interpolate 2nd Row
+        cubic(_p._2[0], _p._2[1], _p._2[2], _p._2[3], _f.x),                                                                                                            // Interpolate 3rd Row
+        cubic(_p._3[0], _p._3[1], _p._3[2], _p._3[3], _f.x),                                                                                                            // Interpolate 4th Row
+        _f.y                                                                                                                                                            // Interpolate Rows
+    );    
+}
